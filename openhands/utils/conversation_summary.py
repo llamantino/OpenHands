@@ -1,5 +1,6 @@
 """Utility functions for generating conversation summaries."""
 
+import re
 from typing import Optional
 
 from openhands.core.config import LLMConfig
@@ -10,6 +11,11 @@ from openhands.events.stream import EventStream
 from openhands.llm.llm import LLM
 from openhands.storage.data_models.settings import Settings
 from openhands.storage.files import FileStore
+
+
+def strip_thinking_block(text: str) -> str:
+    """Remove [think]...[/think] block from a string."""
+    return re.sub(r'\[think\].*?\[/think\]\s*', '', text, flags=re.DOTALL)
 
 
 async def generate_conversation_title(
@@ -27,6 +33,9 @@ async def generate_conversation_title(
     """
     if not message or message.strip() == '':
         return None
+
+    # Strip [think]...[/think] block before anything else
+    message = strip_thinking_block(message)
 
     # Truncate very long messages to avoid excessive token usage
     if len(message) > 1000:
@@ -50,7 +59,7 @@ async def generate_conversation_title(
         ]
 
         response = llm.completion(messages=messages)
-        title = response.choices[0].message.content.strip()
+        title = strip_thinking_block(response.choices[0].message.content.strip())
 
         # Ensure the title isn't too long
         if len(title) > max_length:

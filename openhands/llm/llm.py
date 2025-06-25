@@ -1,5 +1,6 @@
 import copy
 import os
+import re
 import time
 import warnings
 from functools import partial
@@ -241,6 +242,16 @@ class LLM(RetryMixin, DebugMixin):
                 messages_kwarg if isinstance(messages_kwarg, list) else [messages_kwarg]
             )
 
+            # ---- strip any previous [think] blocks before re-sending ----
+            for _m in messages:
+                if isinstance(_m, dict) and _m.get('role') == 'assistant':
+                    c = _m.get('content')
+                    if isinstance(c, str):
+                        _m['content'] = re.sub(
+                            r'\[think\].*?\[/think\]\s*', '', c, flags=re.S
+                        )
+            # -------------------------------------------------------------
+
             # handle conversion of to non-function calling messages if needed
             original_fncall_messages = copy.deepcopy(messages)
             mock_fncall_tools = None
@@ -308,7 +319,19 @@ class LLM(RetryMixin, DebugMixin):
                     message=r'.*content=.*upload.*',
                     category=DeprecationWarning,
                 )
+
                 resp: ModelResponse = self._completion_unwrapped(*args, **kwargs)
+
+                # ---- add [think] block for UI visibility --------------------
+                try:
+                    _msg = resp['choices'][0]['message']  # dict-like
+                    _rc = _msg.get('reasoning_content')
+                    if _rc:
+                        _visible = _msg.get('content', '') or ''
+                        _msg['content'] = f'[think]{_rc.strip()}[/think]\n{_visible}'
+                except Exception as e:
+                    logger.debug(f'reasoning merge skipped: {e}')
+                # -------------------------------------------------------------
 
             # Calculate and record latency
             latency = time.time() - start_time
