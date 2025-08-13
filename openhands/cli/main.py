@@ -24,6 +24,7 @@ from openhands.cli.shell_config import (
 from openhands.cli.tui import (
     UsageMetrics,
     cli_confirm,
+    cli_confirm_sync,
     display_agent_running_message,
     display_banner,
     display_event,
@@ -422,7 +423,7 @@ async def run_setup_flow(config: OpenHandsConfig, settings_store: FileSettingsSt
 
     # Ask if user wants to configure search API settings
     print_formatted_text('')
-    setup_search = cli_confirm(
+    setup_search = await cli_confirm(
         config,
         'Would you like to configure Search API settings (optional)?',
         ['Yes', 'No'],
@@ -479,7 +480,7 @@ def run_alias_setup_flow(config: OpenHandsConfig) -> None:
     print_formatted_text('')
 
     # Use cli_confirm to get user choice
-    choice = cli_confirm(
+    choice = cli_confirm_sync(
         config,
         'Set up shell aliases?',
         ['Yes, set up aliases', 'No, skip this step'],

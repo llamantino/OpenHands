@@ -21,6 +21,7 @@ from openhands.cli.tui import (
     COLOR_GREY,
     UsageMetrics,
     cli_confirm,
+    cli_confirm_sync,
     create_prompt_session,
     display_help,
     display_mcp_errors,
@@ -182,7 +183,9 @@ def handle_exit_command(
     close_repl = False
 
     confirm_exit = (
-        cli_confirm(config, '\nTerminate session?', ['Yes, proceed', 'No, dismiss'])
+        cli_confirm_sync(
+            config, '\nTerminate session?', ['Yes, proceed', 'No, dismiss']
+        )
         == 0
     )
 
@@ -246,7 +249,7 @@ def handle_new_command(
     new_session_requested = False
 
     new_session_requested = (
-        cli_confirm(
+        cli_confirm_sync(
             config,
             '\nCurrent session will be terminated and you will lose the conversation history.\n\nContinue?',
             ['Yes, proceed', 'No, dismiss'],
@@ -271,7 +274,7 @@ async def handle_settings_command(
     settings_store: FileSettingsStore,
 ) -> None:
     display_settings(config)
-    modify_settings = cli_confirm(
+    modify_settings = await cli_confirm(
         config,
         '\nWhich settings would you like to modify?',
         [
@@ -351,7 +354,7 @@ async def init_repository(config: OpenHandsConfig, current_dir: str) -> bool:
             print_formatted_text('')  # Add a newline after the frame
 
             init_repo = (
-                cli_confirm(
+                await cli_confirm(
                     config,
                     'Do you want to re-initialize?',
                     ['Yes, re-initialize', 'No, dismiss'],
@@ -370,7 +373,7 @@ async def init_repository(config: OpenHandsConfig, current_dir: str) -> bool:
         )
 
         init_repo = (
-            cli_confirm(
+            await cli_confirm(
                 config,
                 'Do you want to proceed?',
                 ['Yes, create', 'No, dismiss'],
@@ -414,7 +417,7 @@ def check_folder_security_agreement(config: OpenHandsConfig, current_dir: str) -
         print_formatted_text('')
 
         confirm = (
-            cli_confirm(
+            cli_confirm_sync(
                 config, 'Do you wish to continue?', ['Yes, proceed', 'No, exit']
             )
             == 0
@@ -430,7 +433,7 @@ def check_folder_security_agreement(config: OpenHandsConfig, current_dir: str) -
 
 async def handle_mcp_command(config: OpenHandsConfig) -> None:
     """Handle MCP command with interactive menu."""
-    action = cli_confirm(
+    action = await cli_confirm(
         config,
         'MCP Server Configuration',
         [
@@ -559,7 +562,7 @@ def _add_server_to_config(server_type: str, server_config: dict) -> Path:
 async def add_mcp_server(config: OpenHandsConfig) -> None:
     """Add a new MCP server configuration."""
     # Choose transport type
-    transport_type = cli_confirm(
+    transport_type = await cli_confirm(
         config,
         'Select MCP server transport type:',
         [
@@ -617,7 +620,7 @@ async def add_sse_server(config: OpenHandsConfig) -> None:
                 field = error['loc'][0] if error['loc'] else 'unknown'
                 print_formatted_text(f'  • {field}: {error["msg"]}')
 
-            if cli_confirm(config, '\nTry again?') != 0:
+            if await cli_confirm(config, '\nTry again?') != 0:
                 print_formatted_text('Operation cancelled.')
                 return
 
@@ -672,7 +675,7 @@ async def add_stdio_server(config: OpenHandsConfig) -> None:
         # Check for duplicate server names
         if name in existing_names:
             print_formatted_text(f"❌ Server name '{name}' already exists.")
-            if cli_confirm(config, '\nTry again?') != 0:
+            if await cli_confirm(config, '\nTry again?') != 0:
                 print_formatted_text('Operation cancelled.')
                 return
             continue
@@ -694,7 +697,7 @@ async def add_stdio_server(config: OpenHandsConfig) -> None:
                 field = error['loc'][0] if error['loc'] else 'unknown'
                 print_formatted_text(f'  • {field}: {error["msg"]}')
 
-            if cli_confirm(config, '\nTry again?') != 0:
+            if await cli_confirm(config, '\nTry again?') != 0:
                 print_formatted_text('Operation cancelled.')
                 return
 
@@ -751,7 +754,7 @@ async def add_shttp_server(config: OpenHandsConfig) -> None:
                 field = error['loc'][0] if error['loc'] else 'unknown'
                 print_formatted_text(f'  • {field}: {error["msg"]}')
 
-            if cli_confirm(config, '\nTry again?') != 0:
+            if await cli_confirm(config, '\nTry again?') != 0:
                 print_formatted_text('Operation cancelled.')
                 return
 
@@ -800,7 +803,7 @@ async def remove_mcp_server(config: OpenHandsConfig) -> None:
     choices.append('Cancel')
 
     # Let user choose which server to remove
-    choice = cli_confirm(config, 'Select MCP server to remove:', choices)
+    choice = await cli_confirm(config, 'Select MCP server to remove:', choices)
 
     if choice == len(choices) - 1:  # Cancel
         return
@@ -809,7 +812,7 @@ async def remove_mcp_server(config: OpenHandsConfig) -> None:
     server_type, identifier, _ = servers[choice]
 
     # Confirm removal
-    confirm = cli_confirm(
+    confirm = await cli_confirm(
         config,
         f'Are you sure you want to remove {server_type} server "{identifier}"?',
         ['Yes, remove', 'Cancel'],

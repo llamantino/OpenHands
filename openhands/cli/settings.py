@@ -11,6 +11,7 @@ from openhands.cli.tui import (
     COLOR_GREY,
     UserCancelledError,
     cli_confirm,
+    cli_confirm_sync,
     kb_cancel,
 )
 from openhands.cli.utils import (
@@ -151,7 +152,7 @@ async def get_validated_input(
 
 def save_settings_confirmation(config: OpenHandsConfig) -> bool:
     return (
-        cli_confirm(
+        cli_confirm_sync(
             config,
             '\nSave new settings? (They will take effect after restart)',
             ['Yes, save', 'No, discard'],
@@ -187,7 +188,7 @@ async def modify_llm_settings_basic(
 
         # Show verified providers plus "Select another provider" option
         provider_choices = verified_providers + ['Select another provider']
-        provider_choice = cli_confirm(
+        provider_choice = await cli_confirm(
             config,
             '(Step 1/3) Select LLM Provider:',
             provider_choices,
@@ -269,7 +270,7 @@ async def modify_llm_settings_basic(
             # Create a list of models for the cli_confirm function
             model_choices = VERIFIED_OPENHANDS_MODELS
 
-            model_choice = cli_confirm(
+            model_choice = await cli_confirm(
                 config,
                 (
                     '(Step 2/3) Select Available OpenHands Model:\n'
@@ -287,7 +288,7 @@ async def modify_llm_settings_basic(
                 HTML(f'\n<grey>Default model: </grey><green>{default_model}</green>')
             )
             change_model = (
-                cli_confirm(
+                await cli_confirm(
                     config,
                     'Do you want to use a different model?',
                     [f'Use {default_model}', 'Select another model'],
@@ -422,7 +423,7 @@ async def modify_llm_settings_advanced(
         )
 
         enable_confirmation_mode = (
-            cli_confirm(
+            await cli_confirm(
                 config,
                 question='(Step 5/6) Confirmation Mode (CTRL-c to cancel):',
                 choices=['Enable', 'Disable'],
@@ -431,7 +432,7 @@ async def modify_llm_settings_advanced(
         )
 
         enable_memory_condensation = (
-            cli_confirm(
+            await cli_confirm(
                 config,
                 question='(Step 6/6) Memory Condensation (CTRL-c to cancel):',
                 choices=['Enable', 'Disable'],
@@ -526,7 +527,7 @@ async def modify_search_api_settings(
         print_formatted_text('')
 
         # Ask if user wants to modify
-        modify_key = cli_confirm(
+        modify_key = await cli_confirm(
             config,
             'Do you want to modify the Search API Key?',
             ['Set/Update API Key', 'Remove API Key', 'Keep current setting'],

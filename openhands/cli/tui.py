@@ -14,6 +14,8 @@ from typing import Generator
 import markdown  # type: ignore
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.application import Application
+from prompt_toolkit.application.current import get_app_or_none
+from prompt_toolkit.application.run_in_terminal import run_in_terminal
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML, FormattedText, StyleAndTextTuples
@@ -782,10 +784,7 @@ async def read_confirmation_input(config: OpenHandsConfig) -> str:
             "Always proceed (don't ask again)",
         ]
 
-        # keep the outer coroutine responsive by using asyncio.to_thread which puts the blocking call app.run() of cli_confirm() in a separate thread
-        index = await asyncio.to_thread(
-            cli_confirm, config, 'Choose an option:', choices
-        )
+        index = await cli_confirm(config, 'Choose an option:', choices)
 
         return {0: 'yes', 1: 'no', 2: 'always'}.get(index, 'no')
 
@@ -841,7 +840,7 @@ async def process_agent_pause(done: asyncio.Event, event_stream: EventStream) ->
         input.close()
 
 
-def cli_confirm(
+async def cli_confirm(
     config: OpenHandsConfig,
     question: str = 'Are you sure?',
     choices: list[str] | None = None,
@@ -908,11 +907,26 @@ def cli_confirm(
         layout=layout,
         key_bindings=kb,
         style=style,
-        mouse_support=True,
         full_screen=False,
     )
 
-    return app.run(in_thread=True)
+    current = get_app_or_none()
+    if current and current.is_running:
+        box = {}
+
+        def runner():
+            box['v'] = app.run()
+
+        await run_in_terminal(runner, in_executor=True)
+        return box['v']
+
+    return await app.run_async()
+
+
+def cli_confirm_sync(config, question, choices=None):
+    return asyncio.get_running_loop().run_in_executor(
+        None, lambda: asyncio.run(cli_confirm(config, question, choices))
+    )
 
 
 def kb_cancel() -> KeyBindings:
