@@ -22,18 +22,8 @@ const DEFAULT_TERMINAL_CONFIG: UseTerminalConfig = {
   commands: [],
 };
 
-const renderCommand = (
-  command: Command,
-  terminal: Terminal,
-  isUserInput: boolean = false,
-) => {
-  const { content, type } = command;
-
-  // Skip rendering user input commands that come from the event stream
-  // as they've already been displayed in the terminal as the user typed
-  if (type === "input" && isUserInput) {
-    return;
-  }
+const renderCommand = (command: Command, terminal: Terminal) => {
+  const { content } = command;
 
   terminal.writeln(
     parseTerminalOutput(content.replaceAll("\n", "\r\n").trim()),
@@ -43,6 +33,10 @@ const renderCommand = (
 // Create a persistent reference that survives component unmounts
 // This ensures terminal history is preserved when navigating away and back
 const persistentLastCommandIndex = { current: 0 };
+
+const writePrompt = (term: Terminal | null) => {
+  if (term) term.write("\x1b[38;2;255;215;0m$\x1b[0m ");
+};
 
 export const useTerminal = ({
   commands,
@@ -55,6 +49,11 @@ export const useTerminal = ({
   const lastCommandIndex = persistentLastCommandIndex; // Use the persistent reference
   const keyEventDisposable = React.useRef<{ dispose: () => void } | null>(null);
   const disabled = RUNTIME_INACTIVE_STATES.includes(curAgentState);
+
+  // Tracks the last command typed locally to avoid double-echo when it arrives from the stream
+  const lastLocalInputRef = React.useRef<string | null>(null);
+  // Tracks whether there's an idle prompt already printed ("$ ")
+  const hasPendingPromptRef = React.useRef<boolean>(false);
 
   const createTerminal = () =>
     new Terminal({
@@ -107,6 +106,8 @@ export const useTerminal = ({
 
   const handleEnter = (command: string) => {
     terminal.current?.write("\r\n");
+    // Mark last local input so we can skip its stream echo
+    lastLocalInputRef.current = command;
     // Don't write the command again as it will be added to the commands array
     // and rendered by the useEffect that watches commands
     send(getTerminalCommand(command));
@@ -131,15 +132,14 @@ export const useTerminal = ({
       if (commands.length > 0) {
         for (let i = 0; i < commands.length; i += 1) {
           if (commands[i].type === "input") {
-            terminal.current.write("$ ");
+            writePrompt(terminal.current);
           }
-          // Don't pass isUserInput=true here because we're initializing the terminal
-          // and need to show all previous commands
-          renderCommand(commands[i], terminal.current, false);
+          renderCommand(commands[i], terminal.current);
         }
         lastCommandIndex.current = commands.length;
       }
-      terminal.current.write("$ ");
+      writePrompt(terminal.current);
+      hasPendingPromptRef.current = true;
     }
 
     return () => {
@@ -155,14 +155,34 @@ export const useTerminal = ({
     ) {
       let lastCommandType = "";
       for (let i = lastCommandIndex.current; i < commands.length; i += 1) {
-        lastCommandType = commands[i].type;
-        // Pass true for isUserInput to skip rendering user input commands
-        // that have already been displayed as the user typed
-        renderCommand(commands[i], terminal.current, true);
+        const cmd = commands[i];
+        lastCommandType = cmd.type;
+
+        if (cmd.type === "input") {
+          // Skip the stream echo of the last locally typed command
+          const isLocalEcho = lastLocalInputRef.current === cmd.content;
+          if (!isLocalEcho) {
+            // If an idle prompt is already printed, don't print another one
+            if (!hasPendingPromptRef.current) {
+              writePrompt(terminal.current);
+              hasPendingPromptRef.current = true; // will be consumed below
+            }
+            renderCommand(cmd, terminal.current);
+            // Prompt consumed by this input line
+            hasPendingPromptRef.current = false;
+          } else {
+            lastLocalInputRef.current = null;
+            // The local echo consumed the existing prompt already
+            hasPendingPromptRef.current = false;
+          }
+        } else {
+          renderCommand(cmd, terminal.current);
+        }
       }
       lastCommandIndex.current = commands.length;
       if (lastCommandType === "output") {
-        terminal.current.write("$ ");
+        writePrompt(terminal.current);
+        hasPendingPromptRef.current = true;
       }
     }
   }, [commands, disabled]);
@@ -211,6 +231,8 @@ export const useTerminal = ({
               }
               commandBuffer += key;
               terminal.current?.write(key);
+              // User started typing -> prompt is being consumed
+              hasPendingPromptRef.current = false;
             }
           },
         );
@@ -219,6 +241,8 @@ export const useTerminal = ({
         terminal.current.attachCustomKeyEventHandler((event) =>
           pasteHandler(event, (text) => {
             commandBuffer += text;
+            // Paste also consumes the prompt
+            if (text.length > 0) hasPendingPromptRef.current = false;
           }),
         );
       } else {
