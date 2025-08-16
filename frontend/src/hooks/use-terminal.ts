@@ -24,7 +24,6 @@ const DEFAULT_TERMINAL_CONFIG: UseTerminalConfig = {
 
 const renderCommand = (command: Command, terminal: Terminal) => {
   const { content } = command;
-
   terminal.writeln(
     parseTerminalOutput(content.replaceAll("\n", "\r\n").trim()),
   );
@@ -36,6 +35,15 @@ const persistentLastCommandIndex = { current: 0 };
 
 const writePrompt = (term: Terminal | null) => {
   if (term) term.write("\x1b[38;2;255;215;0m$\x1b[0m ");
+};
+
+// Normalize to avoid fragile dedup (CRLF vs LF, trailing spaces)
+const normalizeInput = (s: string) =>
+  s.replaceAll("\r\n", "\n").replace(/\s+$/g, "");
+
+// Clear the current line (return to start and erase full line)
+const clearCurrentLine = (term: Terminal | null) => {
+  if (term) term.write("\r\x1b[2K");
 };
 
 export const useTerminal = ({
@@ -54,14 +62,16 @@ export const useTerminal = ({
   const lastLocalInputRef = React.useRef<string | null>(null);
   // Tracks whether there's an idle prompt already printed ("$ ")
   const hasPendingPromptRef = React.useRef<boolean>(false);
+  // Shared buffer for the line being edited (so we can restore after remote events)
+  const commandBufferRef = React.useRef<string>("");
+  // If a remote event interrupts the local line, restore after the next output
+  const restoreOnNextOutputRef = React.useRef<boolean>(false);
 
   const createTerminal = () =>
     new Terminal({
       fontFamily: "Menlo, Monaco, 'Courier New', monospace",
       fontSize: 14,
-      theme: {
-        background: "#24272E",
-      },
+      theme: { background: "#24272E" },
     });
 
   const initializeTerminal = () => {
@@ -75,7 +85,6 @@ export const useTerminal = ({
     const clipboardItem = new ClipboardItem({
       "text/plain": new Blob([selection], { type: "text/plain" }),
     });
-
     navigator.clipboard.write([clipboardItem]);
   };
 
@@ -94,25 +103,20 @@ export const useTerminal = ({
           cb(text);
         });
       }
-
       if (event.code === "KeyC") {
         const selection = terminal.current?.getSelection();
         if (selection) copySelection(selection);
       }
     }
-
     return true;
   };
 
   const handleEnter = (command: string) => {
     terminal.current?.write("\r\n");
-    // Mark last local input so we can skip its stream echo
-    lastLocalInputRef.current = command;
-    // Don't write the command again as it will be added to the commands array
-    // and rendered by the useEffect that watches commands
+    // Mark last local input (normalized) so we can skip its stream echo
+    lastLocalInputRef.current = normalizeInput(command);
+    commandBufferRef.current = "";
     send(getTerminalCommand(command));
-    // Don't add the prompt here as it will be added when the command is processed
-    // and the commands array is updated
   };
 
   const handleBackspace = (command: string) => {
@@ -130,16 +134,35 @@ export const useTerminal = ({
       // Render all commands in array
       // This happens when we just switch to Terminal from other tabs
       if (commands.length > 0) {
+        let lastType: Command["type"] | "" = "";
         for (let i = 0; i < commands.length; i += 1) {
-          if (commands[i].type === "input") {
+          const c = commands[i];
+          lastType = c.type;
+          if (c.type === "input") {
             writePrompt(terminal.current);
+            renderCommand(c, terminal.current);
+          } else {
+            // skip empty outputs to avoid extra blank lines on reload
+            const text = c.content.replaceAll("\r\n", "\n").trim();
+            if (text.length > 0) {
+              renderCommand(c, terminal.current);
+            }
           }
-          renderCommand(commands[i], terminal.current);
         }
         lastCommandIndex.current = commands.length;
+
+        // Add a prompt only if the last entry was output (align with live path)
+        if (lastType === "output") {
+          writePrompt(terminal.current);
+          hasPendingPromptRef.current = true;
+        } else {
+          hasPendingPromptRef.current = false;
+        }
+      } else {
+        // No history: show an initial prompt
+        writePrompt(terminal.current);
+        hasPendingPromptRef.current = true;
       }
-      writePrompt(terminal.current);
-      hasPendingPromptRef.current = true;
     }
 
     return () => {
@@ -149,42 +172,83 @@ export const useTerminal = ({
 
   React.useEffect(() => {
     if (
-      terminal.current &&
-      commands.length > 0 &&
-      lastCommandIndex.current < commands.length
+      !terminal.current ||
+      commands.length === 0 ||
+      lastCommandIndex.current >= commands.length
     ) {
-      let lastCommandType = "";
-      for (let i = lastCommandIndex.current; i < commands.length; i += 1) {
-        const cmd = commands[i];
-        lastCommandType = cmd.type;
+      return;
+    }
 
-        if (cmd.type === "input") {
-          // Skip the stream echo of the last locally typed command
-          const isLocalEcho = lastLocalInputRef.current === cmd.content;
-          if (!isLocalEcho) {
-            // If an idle prompt is already printed, don't print another one
-            if (!hasPendingPromptRef.current) {
-              writePrompt(terminal.current);
-              hasPendingPromptRef.current = true; // will be consumed below
-            }
-            renderCommand(cmd, terminal.current);
-            // Prompt consumed by this input line
-            hasPendingPromptRef.current = false;
-          } else {
-            lastLocalInputRef.current = null;
-            // The local echo consumed the existing prompt already
-            hasPendingPromptRef.current = false;
+    let lastCommandType: Command["type"] | "" = "";
+
+    for (let i = lastCommandIndex.current; i < commands.length; i += 1) {
+      const cmd = commands[i];
+      lastCommandType = cmd.type;
+
+      if (cmd.type === "input") {
+        // Skip the stream echo of the last locally typed command (normalized)
+        const isLocalEcho =
+          lastLocalInputRef.current === normalizeInput(cmd.content);
+
+        if (!isLocalEcho) {
+          // If the user was typing on this line, clear that line and restore later
+          if (!hasPendingPromptRef.current && commandBufferRef.current) {
+            clearCurrentLine(terminal.current); // <— cancella "$ ciao"
+            restoreOnNextOutputRef.current = true;
           }
+          // Ensure we have a prompt for the incoming input
+          if (!hasPendingPromptRef.current) {
+            writePrompt(terminal.current);
+          }
+          renderCommand(cmd, terminal.current);
+          // Input consumes the prompt
+          hasPendingPromptRef.current = false;
         } else {
+          // It's our own command; don't render it again
+          lastLocalInputRef.current = null;
+          hasPendingPromptRef.current = false;
+        }
+      } else {
+        // OUTPUT
+
+        // If user was typing but we didn't clear yet (e.g. output arrives first), clear now
+        if (!hasPendingPromptRef.current && commandBufferRef.current) {
+          clearCurrentLine(terminal.current); // <— niente doppio newline
+          restoreOnNextOutputRef.current = true;
+        }
+
+        // If an idle prompt is visible and user NOT typing, clear it so output doesn't start with "$ "
+        if (hasPendingPromptRef.current && !commandBufferRef.current) {
+          terminal.current.write("\r\x1b[K"); // CR + clear to end
+          hasPendingPromptRef.current = false;
+        }
+
+        // Skip empty outputs to avoid stray blank lines
+        const text = cmd.content.replaceAll("\r\n", "\n").trim();
+        if (text.length > 0) {
           renderCommand(cmd, terminal.current);
         }
       }
-      lastCommandIndex.current = commands.length;
-      if (lastCommandType === "output") {
-        writePrompt(terminal.current);
+    }
+
+    lastCommandIndex.current = commands.length;
+
+    // Restore after OUTPUT (single restore point)
+    if (lastCommandType === "output") {
+      writePrompt(terminal.current);
+      if (restoreOnNextOutputRef.current) {
+        if (commandBufferRef.current) {
+          terminal.current?.write(commandBufferRef.current);
+          hasPendingPromptRef.current = false; // keep typing on this line
+        } else {
+          hasPendingPromptRef.current = true;
+        }
+        restoreOnNextOutputRef.current = false;
+      } else {
         hasPendingPromptRef.current = true;
       }
     }
+    // NOTE: deliberately do NOT restore after 'input' only — avoids double prints
   }, [commands, disabled]);
 
   React.useEffect(() => {
@@ -211,36 +275,71 @@ export const useTerminal = ({
         keyEventDisposable.current = null;
       }
 
-      let commandBuffer = "";
+      // Use shared ref instead of local let, so the buffer survives listener rebinds
+      commandBufferRef.current = "";
 
       if (!disabled) {
         // Add new key event listener and store the disposable
         keyEventDisposable.current = terminal.current.onKey(
           ({ key, domEvent }) => {
-            if (domEvent.key === "Enter") {
-              handleEnter(commandBuffer);
-              commandBuffer = "";
-            } else if (domEvent.key === "Backspace") {
-              if (commandBuffer.length > 0) {
-                commandBuffer = handleBackspace(commandBuffer);
-              }
-            } else {
-              // Ignore paste event
-              if (key.charCodeAt(0) === 22) {
-                return;
-              }
-              commandBuffer += key;
-              terminal.current?.write(key);
-              // User started typing -> prompt is being consumed
-              hasPendingPromptRef.current = false;
+            const k = domEvent.key;
+
+            // Block navigation keys so they don't inject escape sequences / move the cursor
+            if (
+              k === "ArrowUp" ||
+              k === "ArrowDown" ||
+              k === "ArrowLeft" ||
+              k === "ArrowRight" ||
+              k === "Home" ||
+              k === "End" ||
+              k === "PageUp" ||
+              k === "PageDown"
+            ) {
+              domEvent.preventDefault();
+              return;
             }
+
+            if (k === "Enter") {
+              handleEnter(commandBufferRef.current);
+              commandBufferRef.current = "";
+              return;
+            }
+
+            if (k === "Backspace") {
+              if (commandBufferRef.current.length > 0) {
+                commandBufferRef.current = handleBackspace(
+                  commandBufferRef.current,
+                );
+                // If buffer becomes empty, we're back to an idle prompt
+                if (commandBufferRef.current.length === 0) {
+                  hasPendingPromptRef.current = true;
+                }
+              }
+              return;
+            }
+
+            // Ignore any ESC-prefixed sequences (e.g., arrows, alt combos)
+            if (key.startsWith("\x1b")) {
+              domEvent.preventDefault();
+              return;
+            }
+
+            // Ignore Ctrl/Alt/Meta combos (paste handled by custom handler)
+            if (domEvent.ctrlKey || domEvent.altKey || domEvent.metaKey) {
+              return;
+            }
+
+            // Printable input: append to buffer and echo
+            commandBufferRef.current += key;
+            terminal.current?.write(key);
+            hasPendingPromptRef.current = commandBufferRef.current.length === 0;
           },
         );
 
         // Add custom key handler and store the disposable
         terminal.current.attachCustomKeyEventHandler((event) =>
           pasteHandler(event, (text) => {
-            commandBuffer += text;
+            commandBufferRef.current += text;
             // Paste also consumes the prompt
             if (text.length > 0) hasPendingPromptRef.current = false;
           }),
